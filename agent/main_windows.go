@@ -15,7 +15,7 @@ var (
 	procCursorInfo = user32Dll.NewProc("GetCursorPos")
 )
 
-func main() {
+func control() {
 
 	type Point struct {
 		X, Y int32

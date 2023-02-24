@@ -1,95 +1,87 @@
-<script setup lang="ts">
-const pc = new RTCPeerConnection({
-  iceServers: [{
-    urls: 'stun:stun.l.google.com:19302'
-  }]
-})
+<script lang="ts">
+
+export default {
+    methods: {
+        sendMessage() {
+            const text = document.getElementById("message").value
+            sendChannel.send(text)
+        }
+    }
+}
+
 const log = msg => {
-  document.getElementById('div').innerHTML += msg + '<br>'
+    console.log(msg)
 }
 
-pc.ontrack = function (event) {
-  const el = document.createElement(event.track.kind)
-  el.srcObject = event.streams[0]
-  el.autoplay = true
-  el.controls = true
+const pc = new RTCPeerConnection({
+  iceServers: [
+    {
+      urls: 'stun:stun.l.google.com:19302'
+    }
+  ]
+})
 
-  document.getElementById('remoteVideos').appendChild(el)
+const sendChannel = pc.createDataChannel('agent')
+sendChannel.onclose = () => console.log('sendChannel has closed')
+sendChannel.onopen = () => console.log('sendChannel has opened')
+sendChannel.onmessage = e => {
+    let ret = document.getElementById("return")
+    ret.append(e.data + " ")
 }
 
-pc.oniceconnectionstatechange = e => log(pc.iceConnectionState)
+pc.oniceconnectionstatechange = e => console.log(pc.iceConnectionState)
+
 pc.onicecandidate = event => {
+  console.log("candidate", event.candidate)
   if (event.candidate === null) {
-    document.getElementById('localSessionDescription').value = btoa(JSON.stringify(pc.localDescription))
+    let localDesc = btoa(JSON.stringify(pc.localDescription))
+    const requestOptions = {
+        method: 'POST',
+        contentType: 'application/json',
+        body: localDesc
+    };
+
+    fetch('http://localhost:8080/sdp', requestOptions)
   }
 }
 
-// Offer to receive 1 audio, and 1 video track
-pc.addTransceiver('video', {
-  direction: 'sendrecv'
-})
-pc.addTransceiver('audio', {
-  direction: 'sendrecv'
-})
+pc.onnegotiationneeded = e => pc.createOffer().then(d => pc.setLocalDescription(d)).catch(log)
 
-pc.createOffer().then(d => pc.setLocalDescription(d)).catch(log)
-
-window.startSession = () => {
-  const sd = document.getElementById('remoteSessionDescription').value
-  if (sd === '') {
-    return alert('Session Description must not be empty')
-  }
-
-  try {
-    pc.setRemoteDescription(JSON.parse(atob(sd)))
-  } catch (e) {
-    alert(e)
-  }
+function checkAgents() {
+    fetch('http://localhost:8080/sdp?type=answer')
+    .then(async response => {
+        const data = await response.text()
+        const desc = JSON.parse(atob(data))
+        console.log(desc)
+        if (desc.sdp) {
+            try {
+                pc.setRemoteDescription(desc)
+                clearInterval(checkInterval)
+                console.log(pc)
+          } catch (e) {
+              console.log(e)
+          }
+        }
+    });
 }
 
-window.copySessionDescription = () => {
-  const browserSessionDescription = document.getElementById('localSessionDescription')
+const checkInterval = setInterval(() => {
+    checkAgents();
+}, 3000);
 
-  browserSessionDescription.focus()
-  browserSessionDescription.select()
-
-  try {
-    const successful = document.execCommand('copy')
-    const msg = successful ? 'successful' : 'unsuccessful'
-    log('Copying SessionDescription was ' + msg)
-  } catch (err) {
-    log('Oops, unable to copy SessionDescription ' + err)
-  }
-}
+setInterval(function() {
+  var elem = document.getElementById('return');
+  elem.scrollTop = elem.scrollHeight;
+}, 100);
 </script>
 
 <template>
   <main>
-    Browser Session Description
-    <br/>
-    <textarea id="localSessionDescription" readonly="true"></textarea>
-    <br/>
-
-    <button onclick="window.copySessionDescription()">Copy browser Session Description to clipboard</button>
-
-    <br/>
-    <br/>
-    <br/>
-
-    Remote Session Description
-    <br/>
-    <textarea id="remoteSessionDescription"></textarea>
-    <br/>
-    <button onclick="window.startSession()">Start Session</button>
-    <br/>
-    <br/>
-
-    Video
-    <br/>
-    <div id="remoteVideos"></div> <br />
-
-    Logs
-    <br/>
-    <div id="div"></div>
+    <div id="agent"></div>
+    <textarea cols="50" rows="10" id="message"></textarea><br />
+    <button @click="sendMessage">Send</button><br />
+    <br />
+    <div style="overflow-wrap: everywhere;background-color: #FFF; width: 200px; height: 200px; overflow: auto; color: #000" id="return">
+    </div>
   </main>
 </template>
