@@ -6,64 +6,70 @@ package main
 import (
     "log"
     "time"
-    //"context"
+    "context"
     "net/http"
     "bytes"
+    //"io"
+    "encoding/json"
+    "fmt"
     "io"
-    "math/rand"
 
 	"github.com/pion/webrtc/v3"
-    "github.com/redanthrax/go-remote/agent/signal"
+    //"github.com/redanthrax/go-remote/agent/signal"
 )
 
-func main() {
-    log.Println("Starting agent service")
+type Agent struct {
+    ID int
+    Ready bool
+    RequestDescription webrtc.SessionDescription
+    AccessDescription webrtc.SessionDescription
+}
 
-    config := webrtc.Configuration{
-		ICEServers: []webrtc.ICEServer{
-			{
-				URLs: []string{"stun:stun.l.google.com:19302"},
-			},
-		},
-	}
-    
-    // Create a new RTCPeerConnection
-	peerConnection, err := webrtc.NewPeerConnection(config)
-	if err != nil {
-		panic(err)
-	}
-	defer func() {
-		if cErr := peerConnection.Close(); cErr != nil {
-			log.Printf("cannot close peerConnection: %v\n", cErr)
-		}
-	}()
+var agent Agent
 
-    peerConnection.OnICECandidate(func(c *webrtc.ICECandidate) {
+func WaitForConnectionPromise()(waitComplete <-chan struct{}) {
+    waitingComplete, done := context.WithCancel(context.Background())
+
+    for {
+        log.Println("Waiting for connection...")
+        resp, _ := http.Get(fmt.Sprintf("http://localhost:8080/sdp?agent=%d", agent.ID))
+        body, _ := io.ReadAll(resp.Body)
+        json.Unmarshal(body, &agent)
+        if agent.RequestDescription.SDP != "" {
+            done()
+            return waitingComplete.Done()
+        }
+
+        time.Sleep(time.Millisecond * 5000)
+    }
+}
+
+func InitiateWebRTC(pc *webrtc.PeerConnection) {
+    pc.OnICECandidate(func(c *webrtc.ICECandidate) {
         log.Println("On ice candidate")
 		if c == nil {
 			return
 		}
 	})
 
-    peerConnection.OnConnectionStateChange(func(s webrtc.PeerConnectionState) {
+    pc.OnConnectionStateChange(func(s webrtc.PeerConnectionState) {
 		log.Printf("Peer Connection State has changed: %s\n", s.String())
 
 		if s == webrtc.PeerConnectionStateFailed {
 			log.Println("Peer Connection has gone to failed exiting")
-            return
 		}
 	})
 
-    peerConnection.OnDataChannel(func(d *webrtc.DataChannel) {
+    pc.OnDataChannel(func(d *webrtc.DataChannel) {
 		log.Printf("New DataChannel %s %d\n", d.Label(), d.ID())
 
 		// Register channel opening handling
 		d.OnOpen(func() {
 			log.Printf("Data channel '%s'-'%d' open. Random messages will now be sent to any connected DataChannels every 5 seconds\n", d.Label(), d.ID())
 
-			for range time.NewTicker(5 * time.Millisecond).C {
+			for range time.NewTicker(1 * time.Second).C {
 				// Send the message as text
-				sendErr := d.SendText(RandomString(5))
+				sendErr := d.SendText("mystring")
 				if sendErr != nil {
 					panic(sendErr)
 				}
@@ -76,40 +82,62 @@ func main() {
 		})
 	})
 
-    log.Println("Getting offers from API")
-    //get the offer from the api
-    resp, _ := http.Get("http://localhost:8080/sdp?type=offer")
-    body, _ := io.ReadAll(resp.Body)
-    resp.Body.Close()
-    description := webrtc.SessionDescription{}
-    signal.Decode(string(body), &description)
-    log.Println("Setting remote description")
-    err = peerConnection.SetRemoteDescription(description)
+}
+
+func main() {
+    log.Println("Starting agent service")
+    log.Println("Registering agent")
+
+    agent.ID = 1
+    agent.Ready = false
+
+    jsonData, _ := json.Marshal(agent)
+    http.Post("http://localhost:8080/agent", "application/json", bytes.NewBuffer(jsonData))
+
+    waitComplete := WaitForConnectionPromise()
+
+    <-waitComplete
+
+    log.Println("Request description obtained")
+
+    config := webrtc.Configuration{
+		ICEServers: []webrtc.ICEServer{
+			{
+				URLs: []string{"stun:stun.l.google.com:19302"},
+			},
+		},
+	}
+
+    pc, err := webrtc.NewPeerConnection(config)
+	if err != nil {
+		panic(err)
+	}
+	defer func() {
+		if cErr := pc.Close(); cErr != nil {
+			log.Printf("cannot close peerConnection: %v\n", cErr)
+		}
+	}()
+
+    InitiateWebRTC(pc)
+
+    err = pc.SetRemoteDescription(agent.RequestDescription)
     if err != nil {
         panic(err)
     }
 
     log.Println("Creating answer")
     // Create an answer
-	answer, err := peerConnection.CreateAnswer(nil)
+	answer, err := pc.CreateAnswer(nil)
 	if err != nil {
 		panic(err)
 	}
 
-    //data, _ := json.Marshal(answer)
-    encoded := signal.Encode(answer)
-
-    _, er := http.Post("http://localhost:8080/sdp", "application/json", bytes.NewBuffer([]byte(encoded)))
-
-    if er != nil {
-        log.Fatal(er)
-    }
-
+    
 	// Create channel that is blocked until ICE Gathering is complete
-	gatherComplete := webrtc.GatheringCompletePromise(peerConnection)
+	gatherComplete := webrtc.GatheringCompletePromise(pc)
 
 	// Sets the LocalDescription, and starts our UDP listeners
-	err = peerConnection.SetLocalDescription(answer)
+	err = pc.SetLocalDescription(answer)
 	if err != nil {
 		panic(err)
 	}
@@ -118,19 +146,15 @@ func main() {
 	// we do this because we only can exchange one signaling message
 	// in a production application you should exchange ICE Candidates via OnICECandidate
 	<-gatherComplete
+
     log.Println("Gathering complete")
 
-    log.Println(*peerConnection.LocalDescription())
+    agent.AccessDescription = answer
+
+    jsonData, _ = json.Marshal(agent)
+    log.Println(string(jsonData))
+    http.Post("http://localhost:8080/agent", "application/json", bytes.NewBuffer(jsonData))
 
     select { }
 }
 
-func RandomString(n int) string {
-    var letters = []rune("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789")
- 
-    s := make([]rune, n)
-    for i := range s {
-        s[i] = letters[rand.Intn(len(letters))]
-    }
-    return string(s)
-}
