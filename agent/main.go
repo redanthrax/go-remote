@@ -13,9 +13,18 @@ import (
     "encoding/json"
     "fmt"
     "io"
+    "os"
 
 	"github.com/pion/webrtc/v3"
-    //"github.com/redanthrax/go-remote/agent/signal"
+    "github.com/pion/webrtc/v3/pkg/media"
+	"github.com/pion/webrtc/v3/pkg/media/ivfreader"
+	//"github.com/pion/webrtc/v3/pkg/media/oggreader"
+)
+
+const (
+	audioFileName   = "output.ogg"
+	videoFileName   = "output.ivf"
+	oggPageDuration = time.Millisecond * 20
 )
 
 type Agent struct {
@@ -45,6 +54,38 @@ func WaitForConnectionPromise()(waitComplete <-chan struct{}) {
 }
 
 func InitiateWebRTC(pc *webrtc.PeerConnection) {
+    videoTrack, videoTrackErr := webrtc.NewTrackLocalStaticSample(webrtc.RTPCodecCapability{MimeType: webrtc.MimeTypeVP8}, "video", "pion")
+    if videoTrackErr != nil {
+        panic(videoTrackErr)
+    }
+
+    rtpSender, videoTrackErr := pc.AddTrack(videoTrack)
+    if videoTrackErr != nil {
+        panic(videoTrackErr)
+    }
+
+    go func() {
+        rtcpBuf := make([]byte, 1500)
+        for {
+            if _, _, rtcpErr := rtpSender.Read(rtcpBuf); rtcpErr != nil {
+                return
+            }
+        }
+    }()
+
+    go func() {
+        // Open a IVF file and start reading using our IVFReader
+        file, _ := os.Open(videoFileName)
+        ivf, header, _ := ivfreader.NewWith(file)
+
+        ticker := time.NewTicker(time.Millisecond * time.Duration((float32(header.TimebaseNumerator)/float32(header.TimebaseDenominator))*1000))
+        for ; true; <-ticker.C {
+            frame, _, _ := ivf.ParseNextFrame()
+
+            videoTrack.WriteSample(media.Sample{Data: frame, Duration: time.Second})
+        }
+    }()
+
     pc.OnICECandidate(func(c *webrtc.ICECandidate) {
         log.Println("On ice candidate")
 		if c == nil {
@@ -54,7 +95,6 @@ func InitiateWebRTC(pc *webrtc.PeerConnection) {
 
     pc.OnConnectionStateChange(func(s webrtc.PeerConnectionState) {
 		log.Printf("Peer Connection State has changed: %s\n", s.String())
-
 		if s == webrtc.PeerConnectionStateFailed {
 			log.Println("Peer Connection has gone to failed exiting")
 		}
@@ -62,7 +102,6 @@ func InitiateWebRTC(pc *webrtc.PeerConnection) {
 
     pc.OnDataChannel(func(d *webrtc.DataChannel) {
 		log.Printf("New DataChannel %s %d\n", d.Label(), d.ID())
-
 		// Register channel opening handling
 		d.OnOpen(func() {
 			log.Printf("Data channel '%s'-'%d' open. Random messages will now be sent to any connected DataChannels every 5 seconds\n", d.Label(), d.ID())
@@ -119,7 +158,6 @@ func main() {
 	}()
 
     InitiateWebRTC(pc)
-
     err = pc.SetRemoteDescription(agent.RequestDescription)
     if err != nil {
         panic(err)
@@ -132,10 +170,8 @@ func main() {
 		panic(err)
 	}
 
-    
 	// Create channel that is blocked until ICE Gathering is complete
 	gatherComplete := webrtc.GatheringCompletePromise(pc)
-
 	// Sets the LocalDescription, and starts our UDP listeners
 	err = pc.SetLocalDescription(answer)
 	if err != nil {
@@ -146,11 +182,8 @@ func main() {
 	// we do this because we only can exchange one signaling message
 	// in a production application you should exchange ICE Candidates via OnICECandidate
 	<-gatherComplete
-
     log.Println("Gathering complete")
-
     agent.AccessDescription = answer
-
     jsonData, _ = json.Marshal(agent)
     log.Println(string(jsonData))
     http.Post("http://localhost:8080/agent", "application/json", bytes.NewBuffer(jsonData))

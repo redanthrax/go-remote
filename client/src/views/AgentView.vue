@@ -8,11 +8,29 @@ const pc = new RTCPeerConnection({
   ]
 })
 
+//offer data channel
 const sendChannel = pc.createDataChannel('agent')
 sendChannel.onclose = () => console.log('sendChannel has closed')
 sendChannel.onopen = () => console.log('sendChannel has opened')
 sendChannel.onmessage = e => {
     console.log(e.data)
+}
+
+pc.addTransceiver('video', {
+  direction: 'sendrecv'
+})
+pc.addTransceiver('audio', {
+  direction: 'sendrecv'
+})
+
+
+pc.ontrack = function (event) {
+  const el = document.createElement(event.track.kind)
+  el.srcObject = event.streams[0]
+  el.autoplay = true
+  el.controls = true
+
+  document.getElementById('view').appendChild(el)
 }
 
 pc.oniceconnectionstatechange = e => console.log(pc.iceConnectionState)
@@ -65,7 +83,7 @@ export default {
 <template>
   <div class="agent">
     <h1>Agent: {{agent.ID}}</h1>
-    <div class="view"></div>
+    <div id="view" class="view"></div>
   </div>
 </template>
 
