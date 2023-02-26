@@ -6,139 +6,49 @@ package main
 import (
     "log"
     "time"
-    "context"
     "net/http"
     "bytes"
-    //"io"
     "encoding/json"
-    "fmt"
-    "io"
-    "os"
+    "io/ioutil"
 
+    "github.com/redanthrax/go-remote/agent/structs"
+    "github.com/redanthrax/go-remote/agent/wrtc"
+    "github.com/redanthrax/go-remote/agent/api"
 	"github.com/pion/webrtc/v3"
-    "github.com/pion/webrtc/v3/pkg/media"
-	"github.com/pion/webrtc/v3/pkg/media/ivfreader"
+    "gopkg.in/yaml.v3"
 	//"github.com/pion/webrtc/v3/pkg/media/oggreader"
 )
 
-const (
-	audioFileName   = "output.ogg"
-	videoFileName   = "output.ivf"
-	oggPageDuration = time.Millisecond * 20
-)
+var agent structs.Agent
 
-type Agent struct {
-    ID int
-    Ready bool
-    RequestDescription webrtc.SessionDescription
-    AccessDescription webrtc.SessionDescription
-}
-
-var agent Agent
-
-func WaitForConnectionPromise()(waitComplete <-chan struct{}) {
-    waitingComplete, done := context.WithCancel(context.Background())
-
-    for {
-        log.Println("Waiting for connection...")
-        resp, _ := http.Get(fmt.Sprintf("http://localhost:8080/sdp?agent=%d", agent.ID))
-        body, _ := io.ReadAll(resp.Body)
-        json.Unmarshal(body, &agent)
-        if agent.RequestDescription.SDP != "" {
-            done()
-            return waitingComplete.Done()
-        }
-
-        time.Sleep(time.Millisecond * 5000)
-    }
-}
-
-func InitiateWebRTC(pc *webrtc.PeerConnection) {
-    videoTrack, videoTrackErr := webrtc.NewTrackLocalStaticSample(webrtc.RTPCodecCapability{MimeType: webrtc.MimeTypeVP8}, "video", "pion")
-    if videoTrackErr != nil {
-        panic(videoTrackErr)
-    }
-
-    rtpSender, videoTrackErr := pc.AddTrack(videoTrack)
-    if videoTrackErr != nil {
-        panic(videoTrackErr)
-    }
-
-    go func() {
-        rtcpBuf := make([]byte, 1500)
-        for {
-            if _, _, rtcpErr := rtpSender.Read(rtcpBuf); rtcpErr != nil {
-                return
-            }
-        }
-    }()
-
-    go func() {
-        // Open a IVF file and start reading using our IVFReader
-        file, _ := os.Open(videoFileName)
-        ivf, header, _ := ivfreader.NewWith(file)
-
-        ticker := time.NewTicker(time.Millisecond * time.Duration((float32(header.TimebaseNumerator)/float32(header.TimebaseDenominator))*1000))
-        for ; true; <-ticker.C {
-            frame, _, _ := ivf.ParseNextFrame()
-
-            videoTrack.WriteSample(media.Sample{Data: frame, Duration: time.Second})
-        }
-    }()
-
-    pc.OnICECandidate(func(c *webrtc.ICECandidate) {
-        log.Println("On ice candidate")
-		if c == nil {
-			return
-		}
-	})
-
-    pc.OnConnectionStateChange(func(s webrtc.PeerConnectionState) {
-		log.Printf("Peer Connection State has changed: %s\n", s.String())
-		if s == webrtc.PeerConnectionStateFailed {
-			log.Println("Peer Connection has gone to failed exiting")
-		}
-	})
-
-    pc.OnDataChannel(func(d *webrtc.DataChannel) {
-		log.Printf("New DataChannel %s %d\n", d.Label(), d.ID())
-		// Register channel opening handling
-		d.OnOpen(func() {
-			log.Printf("Data channel '%s'-'%d' open. Random messages will now be sent to any connected DataChannels every 5 seconds\n", d.Label(), d.ID())
-
-			for range time.NewTicker(1 * time.Second).C {
-				// Send the message as text
-				sendErr := d.SendText("mystring")
-				if sendErr != nil {
-					panic(sendErr)
-				}
-			}
-		})
-
-		// Register text message handling
-		d.OnMessage(func(msg webrtc.DataChannelMessage) {
-			log.Printf("Message from DataChannel '%s': '%s'\n", d.Label(), string(msg.Data))
-		})
-	})
+type State struct {
 
 }
 
 func main() {
-    log.Println("Starting agent service")
-    log.Println("Registering agent")
+    agent := structs.Agent{}
+    log.Println("Checking agent config")
+    yfile, err := ioutil.ReadFile("config.yml")    
+    if err != nil {
+        log.Fatal(err)
+    }
 
-    agent.ID = 1
-    agent.Ready = false
+    err = yaml.Unmarshal(yfile, &agent)
+    if err != nil {
+        log.Fatal(err)
+    }
 
-    jsonData, _ := json.Marshal(agent)
+    log.Println("Connecting to API")
+    jsonData, err2 := json.Marshal(agent)
+    if err2 != nil {
+        log.Println(err2)
+    }
+
     http.Post("http://localhost:8080/agent", "application/json", bytes.NewBuffer(jsonData))
-
-    waitComplete := WaitForConnectionPromise()
-
+    waitComplete := api.WaitForConnectionPromise(&agent)
     <-waitComplete
 
-    log.Println("Request description obtained")
-
+    //startup web rtc initialization
     config := webrtc.Configuration{
 		ICEServers: []webrtc.ICEServer{
 			{
@@ -157,37 +67,20 @@ func main() {
 		}
 	}()
 
-    InitiateWebRTC(pc)
+    wrtc.InitiateWebRTC(pc)
+    log.Println("Setting remote description")
     err = pc.SetRemoteDescription(agent.RequestDescription)
     if err != nil {
-        panic(err)
+        log.Fatal(err)
     }
 
-    log.Println("Creating answer")
-    // Create an answer
-	answer, err := pc.CreateAnswer(nil)
-	if err != nil {
-		panic(err)
-	}
-
-	// Create channel that is blocked until ICE Gathering is complete
-	gatherComplete := webrtc.GatheringCompletePromise(pc)
-	// Sets the LocalDescription, and starts our UDP listeners
-	err = pc.SetLocalDescription(answer)
-	if err != nil {
-		panic(err)
-	}
-
-	// Block until ICE Gathering is complete, disabling trickle ICE
-	// we do this because we only can exchange one signaling message
-	// in a production application you should exchange ICE Candidates via OnICECandidate
-	<-gatherComplete
-    log.Println("Gathering complete")
-    agent.AccessDescription = answer
+    agent.AccessDescription = wrtc.CompleteWebrtcConnection(pc)
     jsonData, _ = json.Marshal(agent)
     log.Println(string(jsonData))
     http.Post("http://localhost:8080/agent", "application/json", bytes.NewBuffer(jsonData))
-
-    select { }
+    for {
+        log.Println("Supervising...")
+        time.Sleep(time.Second * 5)
+    }
 }
 

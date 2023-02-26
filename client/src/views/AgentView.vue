@@ -69,6 +69,7 @@ export default {
             fetch('http://localhost:8080/sdp?agent=' + this.agent.ID)
                 .then(response => response.json())
                 .then(json => {
+                    console.log(json)
                     if(json.AccessDescription.sdp) {
                         this.agent = json
                         clearInterval(this.inter)

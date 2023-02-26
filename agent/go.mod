@@ -5,6 +5,7 @@ go 1.19
 require (
 	github.com/pion/webrtc/v3 v3.1.55
 	golang.org/x/sys v0.5.0
+	gopkg.in/yaml.v3 v3.0.1
 )
 
 require (

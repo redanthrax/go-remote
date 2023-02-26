@@ -4,9 +4,9 @@ import (
     "io"
     "log"
     "net/http"
-    "strconv"
     "encoding/json"
 	"github.com/pion/webrtc/v3"
+    "github.com/redanthrax/go-remote/server/structs"
     "github.com/redanthrax/go-remote/server/signal"
 )
 
@@ -14,17 +14,10 @@ func enableCors(w *http.ResponseWriter) {
     (*w).Header().Set("Access-Control-Allow-Origin", "*")
 }
 
-type Agent struct {
-    ID int
-    Ready bool
-    RequestDescription webrtc.SessionDescription
-    AccessDescription webrtc.SessionDescription
-}
-
 func main() {
     log.Println("Starting API server...")
 
-    agents := []Agent{}
+    agents := []structs.Agent{}
 
     http.HandleFunc("/agent", func(w http.ResponseWriter, r *http.Request) {
         enableCors(&w)
@@ -33,7 +26,7 @@ func main() {
                 log.Println("Received agent post")
                 defer r.Body.Close()
                 body, _:= io.ReadAll(r.Body)
-                agent := Agent{}
+                agent := structs.Agent{}
                 json.Unmarshal(body, &agent)
                 if len(agents) == 0 {
                     agents = append(agents, agent)
@@ -61,7 +54,7 @@ func main() {
         enableCors(&w)
         switch r.Method {
             case "POST":
-                agentId, _ := strconv.Atoi(r.URL.Query().Get("agent"))
+                agentId := r.URL.Query().Get("agent")
                 log.Println("Received sdp post for agent", agentId)
                 defer r.Body.Close()
                 body, _ := io.ReadAll(r.Body)
@@ -78,9 +71,11 @@ func main() {
                 }
 
             case "GET":
-                agentId, _ := strconv.Atoi(r.URL.Query().Get("agent"))
+                agentId := r.URL.Query().Get("agent")
+                log.Println("Received sdp get for agent", agentId)
                 for i := range(agents) {
                     if agents[i].ID == agentId {
+                        log.Println("Agent hit")
                         jsonData, _ := json.Marshal(agents[i])
                         io.WriteString(w, string(jsonData))
                     }
