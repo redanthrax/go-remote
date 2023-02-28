@@ -6,26 +6,25 @@ package main
 import (
     "log"
     "time"
-    "net/http"
-    "bytes"
-    "encoding/json"
+    //"net/http"
+    //"bytes"
+    //"encoding/json"
     "io/ioutil"
 
     "github.com/redanthrax/go-remote/agent/structs"
-    "github.com/redanthrax/go-remote/agent/wrtc"
-    "github.com/redanthrax/go-remote/agent/api"
-	"github.com/pion/webrtc/v3"
+    //"github.com/redanthrax/go-remote/agent/wrtc"
+    //"github.com/redanthrax/go-remote/agent/api"
+	//"github.com/pion/webrtc/v3"
     "gopkg.in/yaml.v3"
 	//"github.com/pion/webrtc/v3/pkg/media/oggreader"
 )
 
 var agent structs.Agent
-
-type State struct {
-
-}
+var state structs.State
 
 func main() {
+    //startup
+    //get config data
     agent := structs.Agent{}
     log.Println("Checking agent config")
     yfile, err := ioutil.ReadFile("config.yml")    
@@ -38,6 +37,19 @@ func main() {
         log.Fatal(err)
     }
 
+    log.Println(agent)
+
+    //start looping to do stuff speed limit at 1 second for non-bog
+    for {
+        log.Println("Starting agent loop")
+
+                 
+
+        time.Sleep(time.Second * 1)
+    }
+
+    /*
+    //say hello to the api and register agent - no auth
     log.Println("Connecting to API")
     jsonData, err2 := json.Marshal(agent)
     if err2 != nil {
@@ -78,9 +90,6 @@ func main() {
     jsonData, _ = json.Marshal(agent)
     log.Println(string(jsonData))
     http.Post("http://localhost:8080/agent", "application/json", bytes.NewBuffer(jsonData))
-    for {
-        log.Println("Supervising...")
-        time.Sleep(time.Second * 5)
-    }
+    */
 }
 
